@@ -6,11 +6,11 @@ SetCompressor /SOLID lzma
 !endif
 
 !ifndef APP_VERSION
-  !define APP_VERSION "0.1.0"
+  !define APP_VERSION "0.2.0"
 !endif
 
 !ifndef APP_VERSION_QUAD
-  !define APP_VERSION_QUAD "0.1.0.0"
+  !define APP_VERSION_QUAD "0.2.0.0"
 !endif
 
 !ifndef APP_PUBLISHER
@@ -26,7 +26,7 @@ SetCompressor /SOLID lzma
 !endif
 
 !ifndef OUT_FILE
-  !define OUT_FILE "../../src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/Maven Settings Management_0.1.0_x64-setup.exe"
+  !define OUT_FILE "../../src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/Maven Settings Management_0.2.0_x64-setup.exe"
 !endif
 
 Name "${APP_NAME}"

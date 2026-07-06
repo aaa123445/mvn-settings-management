@@ -12,8 +12,16 @@ use std::{
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 struct AppConfig {
+  #[serde(default)]
   maven_path: Option<String>,
+  #[serde(default)]
+  default_maven_version_id: Option<String>,
+  #[serde(default)]
+  maven_versions: Vec<MavenVersionEntry>,
   default_settings_id: Option<String>,
+  #[serde(default)]
+  idea_projects: Vec<IdeaProjectEntry>,
+  #[serde(default)]
   settings: Vec<SettingsEntry>,
 }
 
@@ -26,6 +34,29 @@ pub struct MavenInfo {
   java_version: Option<String>,
   raw_output: String,
   source: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MavenVersionEntry {
+  id: String,
+  name: String,
+  mvn_path: String,
+  maven_home: Option<String>,
+  version: Option<String>,
+  java_version: Option<String>,
+  raw_output: String,
+  source: String,
+  is_default: bool,
+  created_at: String,
+  updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MavenVersionIndex {
+  entries: Vec<MavenVersionEntry>,
+  default_maven_version_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -66,6 +97,53 @@ pub struct SettingsDocument {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct IdeaProjectEntry {
+  id: String,
+  name: String,
+  project_path: String,
+  idea_dir: Option<String>,
+  workspace_path: Option<String>,
+  misc_path: Option<String>,
+  pom_path: Option<String>,
+  #[serde(default)]
+  pom_files: Vec<String>,
+  #[serde(default)]
+  maven_home: Option<String>,
+  #[serde(default)]
+  maven_home_type: Option<String>,
+  #[serde(default)]
+  local_repository: Option<String>,
+  #[serde(default)]
+  settings_path: Option<String>,
+  maven_config: Option<String>,
+  jvm_config: Option<String>,
+  #[serde(default)]
+  maven_version_id: Option<String>,
+  settings_id: Option<String>,
+  imported_at: String,
+  updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IdeaProjectImportResult {
+  project: IdeaProjectEntry,
+  settings: Option<SettingsDocument>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct IdeaMavenMetadata {
+  workspace_path: Option<String>,
+  misc_path: Option<String>,
+  maven_home: Option<String>,
+  maven_home_type: Option<String>,
+  local_repository: Option<String>,
+  user_settings_file: Option<String>,
+  pom_files: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BackupResult {
   settings_path: String,
   backup_path: Option<String>,
@@ -92,6 +170,9 @@ pub struct MavenTestResult {
 #[tauri::command]
 fn detect_maven() -> Result<MavenInfo, String> {
   let config = load_config()?;
+  if let Some(entry) = default_maven_version(&config) {
+    return Ok(maven_info_from_entry(&entry));
+  }
   let candidates = maven_candidates(config.maven_path.as_deref());
   for (path, source) in candidates {
     if let Ok(info) = run_maven_version(&path, &source) {
@@ -103,12 +184,87 @@ fn detect_maven() -> Result<MavenInfo, String> {
 
 #[tauri::command]
 fn set_maven_path(path: String) -> Result<MavenInfo, String> {
-  let mvn_path = resolve_maven_input(&path)?;
-  let info = run_maven_version(&mvn_path, "manual")?;
-  let mut config = load_config()?;
-  config.maven_path = Some(mvn_path.to_string_lossy().to_string());
+  let entry = add_or_update_maven_version(path, "".to_string(), "manual".to_string(), true)?;
+  Ok(maven_info_from_entry(&entry))
+}
+
+#[tauri::command]
+fn list_maven_versions() -> Result<MavenVersionIndex, String> {
+  let config = load_config()?;
   save_config(&config)?;
-  Ok(info)
+  Ok(maven_index_from_config(config))
+}
+
+#[tauri::command]
+fn add_maven_version(path: String, name: String) -> Result<MavenVersionEntry, String> {
+  add_or_update_maven_version(path, name, "manual".to_string(), false)
+}
+
+#[tauri::command]
+fn detect_and_add_maven_version() -> Result<MavenVersionEntry, String> {
+  let config = load_config()?;
+  for (path, source) in maven_candidates(config.maven_path.as_deref()) {
+    if let Ok(info) = run_maven_version(&path, &source) {
+      return save_maven_version_from_info(info, "".to_string(), source, false);
+    }
+  }
+  Err("未找到可用 Maven，请手动添加 Maven home 或 mvn 路径".to_string())
+}
+
+#[tauri::command]
+fn rename_maven_version(id: String, name: String) -> Result<MavenVersionEntry, String> {
+  let next_name = normalize_name(&name);
+  let mut config = load_config()?;
+  let entry = config
+    .maven_versions
+    .iter_mut()
+    .find(|entry| entry.id == id)
+    .ok_or_else(|| "未找到 Maven 版本".to_string())?;
+  entry.name = next_name;
+  entry.updated_at = now_stamp();
+  let saved_entry = entry.clone();
+  save_config(&config)?;
+  Ok(saved_entry)
+}
+
+#[tauri::command]
+fn set_default_maven_version(id: String) -> Result<MavenVersionEntry, String> {
+  let mut config = load_config()?;
+  if !config.maven_versions.iter().any(|entry| entry.id == id) {
+    return Err("未找到 Maven 版本".to_string());
+  }
+  config.default_maven_version_id = Some(id.clone());
+  normalize_config_defaults(&mut config);
+  let entry = config
+    .maven_versions
+    .iter()
+    .find(|entry| entry.id == id)
+    .cloned()
+    .ok_or_else(|| "未找到 Maven 版本".to_string())?;
+  save_config(&config)?;
+  Ok(entry)
+}
+
+#[tauri::command]
+fn delete_maven_version(id: String) -> Result<(), String> {
+  let mut config = load_config()?;
+  let index = config
+    .maven_versions
+    .iter()
+    .position(|entry| entry.id == id)
+    .ok_or_else(|| "未找到 Maven 版本".to_string())?;
+  config.maven_versions.remove(index);
+  if config.default_maven_version_id.as_deref() == Some(&id) {
+    config.default_maven_version_id = config.maven_versions.first().map(|entry| entry.id.clone());
+  }
+  for project in &mut config.idea_projects {
+    if project.maven_version_id.as_deref() == Some(&id) {
+      project.maven_version_id = None;
+      project.updated_at = now_stamp();
+    }
+  }
+  normalize_config_defaults(&mut config);
+  save_config(&config)
 }
 
 #[tauri::command]
@@ -170,11 +326,13 @@ fn import_settings(path: String, name: String) -> Result<SettingsDocument, Strin
   let id_source = if name.trim().is_empty() { default_name.as_str() } else { &name };
   let id = make_id(id_source);
   let now = now_stamp();
+  let target_path = settings_dir()?.join(format!("{id}.xml"));
+  fs::write(&target_path, &xml).map_err(|error| format!("写入 settings 文件失败：{error}"))?;
   let entry = SettingsEntry {
     id,
     name: if name.trim().is_empty() { file_stem(&file_path) } else { normalize_name(&name) },
-    file_path: absolute_path(&file_path).to_string_lossy().to_string(),
-    source_type: "external".to_string(),
+    file_path: target_path.to_string_lossy().to_string(),
+    source_type: "managed".to_string(),
     is_default: false,
     created_at: now.clone(),
     updated_at: now,
@@ -186,6 +344,199 @@ fn import_settings(path: String, name: String) -> Result<SettingsDocument, Strin
     xml,
     validation,
   })
+}
+
+#[tauri::command]
+fn list_idea_projects() -> Result<Vec<IdeaProjectEntry>, String> {
+  let mut config = load_config()?;
+  refresh_idea_projects_from_disk(&mut config)?;
+  save_config(&config)?;
+  Ok(config.idea_projects)
+}
+
+#[tauri::command]
+fn import_idea_project(project_path: String) -> Result<IdeaProjectImportResult, String> {
+  ensure_app_dirs()?;
+  let project_root = absolute_path(&expand_tilde(&project_path));
+  if !project_root.is_dir() {
+    return Err("IDEA 项目目录不存在".to_string());
+  }
+
+  let idea_dir = project_root.join(".idea");
+  let pom_path = project_root.join("pom.xml");
+  let mvn_dir = project_root.join(".mvn");
+  if !idea_dir.is_dir() && !pom_path.is_file() && !mvn_dir.is_dir() {
+    return Err("请选择包含 .idea、pom.xml 或 .mvn 的项目根目录".to_string());
+  }
+
+  let project_name = dir_name(&project_root);
+  let maven_config = read_optional_text(&mvn_dir.join("maven.config"))?;
+  let jvm_config = read_optional_text(&mvn_dir.join("jvm.config"))?;
+  let idea_metadata = read_idea_maven_metadata(&project_root)?;
+  let settings_source = idea_metadata
+    .user_settings_file
+    .as_deref()
+    .map(PathBuf::from)
+    .filter(|path| path.is_file())
+    .or_else(|| find_project_settings_path(&project_root));
+  let project_settings_path = settings_source.as_ref().map(|path| absolute_path(path).to_string_lossy().to_string());
+  let now = now_stamp();
+  let mut config = load_config()?;
+  let existing_index = config
+    .idea_projects
+    .iter()
+    .position(|project| absolute_path(Path::new(&project.project_path)) == project_root);
+  let existing_project = existing_index.and_then(|index| config.idea_projects.get(index).cloned());
+  let existing_settings_id = existing_project.as_ref().and_then(|project| project.settings_id.clone());
+  let existing_maven_version_id = existing_project.as_ref().and_then(|project| project.maven_version_id.clone());
+  let mut linked_settings_id = existing_settings_id.clone();
+  let mut imported_settings = None;
+
+  if let Some(settings_path) = settings_source {
+    let xml = fs::read_to_string(&settings_path).map_err(|error| format!("读取项目 settings 失败：{error}"))?;
+    let validation = validate_settings_xml(&xml);
+    if !validation.errors.is_empty() {
+      return Err(validation.errors.join("；"));
+    }
+
+    let settings_id = existing_settings_id
+      .filter(|id| config.settings.iter().any(|entry| entry.id == *id))
+      .unwrap_or_else(|| make_id(&format!("{project_name}-idea-settings")));
+    let target_path = settings_dir()?.join(format!("{settings_id}.xml"));
+    fs::write(&target_path, &xml).map_err(|error| format!("写入 IDEA 项目 settings 副本失败：{error}"))?;
+
+    let settings_name = format!("{project_name} IDEA settings");
+    let saved_entry = if let Some(entry) = config.settings.iter_mut().find(|entry| entry.id == settings_id) {
+      entry.name = settings_name;
+      entry.file_path = target_path.to_string_lossy().to_string();
+      entry.source_type = "managed".to_string();
+      entry.updated_at = now.clone();
+      entry.clone()
+    } else {
+      let entry = SettingsEntry {
+        id: settings_id.clone(),
+        name: settings_name,
+        file_path: target_path.to_string_lossy().to_string(),
+        source_type: "managed".to_string(),
+        is_default: false,
+        created_at: now.clone(),
+        updated_at: now.clone(),
+      };
+      config.settings.push(entry.clone());
+      entry
+    };
+
+    linked_settings_id = Some(settings_id);
+    imported_settings = Some(SettingsDocument {
+      entry: saved_entry,
+      xml,
+      validation,
+    });
+  }
+
+  let linked_maven_version_id = valid_or_matched_maven_version_id(&config, existing_maven_version_id, &idea_metadata.maven_home);
+  let project = IdeaProjectEntry {
+    id: existing_project
+      .as_ref()
+      .map(|project| project.id.clone())
+      .unwrap_or_else(|| make_id(&project_name)),
+    name: project_name,
+    project_path: project_root.to_string_lossy().to_string(),
+    idea_dir: path_if_dir(&idea_dir),
+    workspace_path: idea_metadata.workspace_path,
+    misc_path: idea_metadata.misc_path,
+    pom_path: path_if_file(&pom_path),
+    pom_files: idea_metadata.pom_files,
+    maven_home: idea_metadata.maven_home,
+    maven_home_type: idea_metadata.maven_home_type,
+    local_repository: idea_metadata.local_repository,
+    settings_path: project_settings_path.or_else(|| existing_project.as_ref().and_then(|project| project.settings_path.clone())),
+    maven_config,
+    jvm_config,
+    maven_version_id: linked_maven_version_id,
+    settings_id: linked_settings_id,
+    imported_at: existing_project
+      .as_ref()
+      .map(|project| project.imported_at.clone())
+      .unwrap_or_else(|| now.clone()),
+    updated_at: now,
+  };
+
+  if let Some(index) = existing_index {
+    config.idea_projects[index] = project.clone();
+  } else {
+    config.idea_projects.push(project.clone());
+  }
+  save_config(&config)?;
+  Ok(IdeaProjectImportResult {
+    project,
+    settings: imported_settings,
+  })
+}
+
+#[tauri::command]
+fn save_idea_project_config(
+  id: String,
+  maven_version_id: String,
+  local_repository: String,
+  settings_id: String,
+  maven_config: String,
+  jvm_config: String,
+) -> Result<IdeaProjectEntry, String> {
+  let mut config = load_config()?;
+  let index = config
+    .idea_projects
+    .iter()
+    .position(|project| project.id == id)
+    .ok_or_else(|| "未找到 IDEA 项目配置".to_string())?;
+  let project_root = absolute_path(Path::new(&config.idea_projects[index].project_path));
+  if !project_root.is_dir() {
+    return Err("IDEA 项目目录不存在，无法写回项目级 Maven 配置".to_string());
+  }
+
+  let mvn_dir = project_root.join(".mvn");
+  let saved_maven_config = write_optional_project_text(&mvn_dir.join("maven.config"), &maven_config)?;
+  let saved_jvm_config = write_optional_project_text(&mvn_dir.join("jvm.config"), &jvm_config)?;
+  let selected_maven_version_id = if maven_version_id.trim().is_empty() {
+    None
+  } else {
+    Some(maven_version_id.trim().to_string())
+  };
+  let selected_maven_entry = selected_maven_version_id
+    .as_deref()
+    .map(|id| find_maven_version(&config, id))
+    .transpose()?;
+  let saved_maven_home = selected_maven_entry
+    .as_ref()
+    .map(maven_home_for_entry)
+    .transpose()?;
+  let saved_local_repository = normalize_optional_path(&local_repository);
+  let selected_settings_id = if settings_id.trim().is_empty() { None } else { Some(settings_id.trim().to_string()) };
+  let saved_settings_path = if let Some(settings_id) = selected_settings_id.as_deref() {
+    Some(write_global_settings_to_project(&config, settings_id, &mvn_dir)?)
+  } else {
+    None
+  };
+  let (workspace_path, maven_home_type) = save_idea_maven_general_settings(
+    &project_root,
+    saved_maven_home.as_deref(),
+    saved_local_repository.as_deref(),
+    saved_settings_path.as_deref(),
+  )?;
+  let project = &mut config.idea_projects[index];
+  project.workspace_path = Some(workspace_path);
+  project.maven_home = saved_maven_home;
+  project.maven_home_type = maven_home_type;
+  project.local_repository = saved_local_repository;
+  project.settings_path = saved_settings_path;
+  project.maven_config = saved_maven_config;
+  project.jvm_config = saved_jvm_config;
+  project.maven_version_id = selected_maven_version_id;
+  project.settings_id = selected_settings_id;
+  project.updated_at = now_stamp();
+  let saved_project = project.clone();
+  save_config(&config)?;
+  Ok(saved_project)
 }
 
 #[tauri::command]
@@ -209,12 +560,37 @@ fn save_settings(id: String, xml: String) -> Result<SettingsDocument, String> {
   }
 
   let mut config = load_config()?;
+  let entry_index = config
+    .settings
+    .iter()
+    .position(|entry| entry.id == id)
+    .ok_or_else(|| "未找到 settings 配置".to_string())?;
+  let entry_path = config.settings[entry_index].file_path.clone();
+  let project_settings_target = if config.settings[entry_index].source_type == "ideaProject" {
+    config
+      .idea_projects
+      .iter()
+      .position(|project| project.settings_id.as_deref() == Some(&id))
+      .map(|project_index| project_settings_target(&config.idea_projects[project_index]).map(|path| (project_index, path)))
+      .transpose()?
+  } else {
+    None
+  };
+
+  fs::write(&entry_path, &xml).map_err(|error| format!("保存 settings 文件失败：{error}"))?;
+  if let Some((project_index, target_path)) = project_settings_target {
+    if let Some(parent) = target_path.parent() {
+      fs::create_dir_all(parent).map_err(|error| format!("创建项目 .mvn 目录失败：{error}"))?;
+    }
+    fs::write(&target_path, &xml).map_err(|error| format!("写回 IDEA 项目 settings 失败：{error}"))?;
+    config.idea_projects[project_index].settings_path = Some(target_path.to_string_lossy().to_string());
+    config.idea_projects[project_index].updated_at = now_stamp();
+  }
+
   let entry = config
     .settings
-    .iter_mut()
-    .find(|entry| entry.id == id)
+    .get_mut(entry_index)
     .ok_or_else(|| "未找到 settings 配置".to_string())?;
-  fs::write(&entry.file_path, &xml).map_err(|error| format!("保存 settings 文件失败：{error}"))?;
   entry.updated_at = now_stamp();
   let saved_entry = entry.clone();
   save_config(&config)?;
@@ -399,6 +775,12 @@ fn delete_settings(id: String) -> Result<(), String> {
   if config.default_settings_id.as_deref() == Some(&id) {
     config.default_settings_id = None;
   }
+  for project in &mut config.idea_projects {
+    if project.settings_id.as_deref() == Some(&id) {
+      project.settings_id = None;
+      project.updated_at = now_stamp();
+    }
+  }
   save_config(&config)
 }
 
@@ -420,10 +802,10 @@ fn test_settings(id: String) -> Result<MavenTestResult, String> {
     return Err(validation.errors.join("；"));
   }
 
-  let maven = detect_maven()?;
-  let mvn_path = maven
-    .mvn_path
-    .ok_or_else(|| "未找到可用 Maven，请先设置 Maven 路径".to_string())?;
+  let mvn_path = default_maven_version(&config)
+    .map(|entry| entry.mvn_path)
+    .or_else(|| detect_maven().ok().and_then(|info| info.mvn_path))
+    .ok_or_else(|| "未找到可用 Maven，请先在全局配置中添加 Maven 版本".to_string())?;
   let command = format!(
     "{} -s {} --offline help:effective-settings -DskipTests",
     quote_path(&mvn_path),
@@ -455,9 +837,18 @@ pub fn run() {
     .invoke_handler(tauri::generate_handler![
       detect_maven,
       set_maven_path,
+      list_maven_versions,
+      add_maven_version,
+      detect_and_add_maven_version,
+      rename_maven_version,
+      set_default_maven_version,
+      delete_maven_version,
       list_settings,
       create_settings,
       import_settings,
+      list_idea_projects,
+      import_idea_project,
+      save_idea_project_config,
       read_settings,
       save_settings,
       rename_settings,
@@ -471,6 +862,172 @@ pub fn run() {
     ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");
+}
+
+fn add_or_update_maven_version(path: String, name: String, source: String, set_default: bool) -> Result<MavenVersionEntry, String> {
+  let mvn_path = resolve_maven_input(&path)?;
+  let info = run_maven_version(&mvn_path, &source)?;
+  save_maven_version_from_info(info, name, source, set_default)
+}
+
+fn save_maven_version_from_info(
+  info: MavenInfo,
+  name: String,
+  source: String,
+  set_default: bool,
+) -> Result<MavenVersionEntry, String> {
+  let mut config = load_config()?;
+  let now = now_stamp();
+  let mvn_path = info
+    .mvn_path
+    .clone()
+    .ok_or_else(|| "未识别 mvn 可执行文件路径".to_string())?;
+  let maven_home = info.maven_home.clone().or_else(|| infer_maven_home(Path::new(&mvn_path)));
+  let next_name = normalize_maven_name(&name, info.version.as_deref(), maven_home.as_deref(), &source);
+  let existing_index = config.maven_versions.iter().position(|entry| same_path(&entry.mvn_path, &mvn_path));
+  let should_default = set_default || config.default_maven_version_id.is_none() || config.maven_versions.is_empty();
+
+  let entry = if let Some(index) = existing_index {
+    let entry = config
+      .maven_versions
+      .get_mut(index)
+      .ok_or_else(|| "未找到 Maven 版本".to_string())?;
+    entry.name = next_name;
+    entry.mvn_path = mvn_path;
+    entry.maven_home = maven_home;
+    entry.version = info.version;
+    entry.java_version = info.java_version;
+    entry.raw_output = info.raw_output;
+    entry.source = source;
+    entry.updated_at = now;
+    entry.clone()
+  } else {
+    let entry = MavenVersionEntry {
+      id: make_id(&next_name),
+      name: next_name,
+      mvn_path,
+      maven_home,
+      version: info.version,
+      java_version: info.java_version,
+      raw_output: info.raw_output,
+      source,
+      is_default: false,
+      created_at: now.clone(),
+      updated_at: now,
+    };
+    config.maven_versions.push(entry.clone());
+    entry
+  };
+
+  if should_default {
+    config.default_maven_version_id = Some(entry.id.clone());
+  }
+  config.maven_path = Some(entry.mvn_path.clone());
+  normalize_config_defaults(&mut config);
+  let saved_entry = config
+    .maven_versions
+    .iter()
+    .find(|item| item.id == entry.id)
+    .cloned()
+    .ok_or_else(|| "保存 Maven 版本失败".to_string())?;
+  save_config(&config)?;
+  Ok(saved_entry)
+}
+
+fn normalize_maven_name(name: &str, version: Option<&str>, maven_home: Option<&str>, source: &str) -> String {
+  let value = name.trim();
+  if !value.is_empty() {
+    return value.to_string();
+  }
+  if let Some(version) = version {
+    return format!("Maven {version}");
+  }
+  if let Some(home) = maven_home {
+    return format!("Maven {}", dir_name(Path::new(home)));
+  }
+  format!("Maven {source}")
+}
+
+fn maven_info_from_entry(entry: &MavenVersionEntry) -> MavenInfo {
+  MavenInfo {
+    mvn_path: Some(entry.mvn_path.clone()),
+    maven_home: entry.maven_home.clone(),
+    version: entry.version.clone(),
+    java_version: entry.java_version.clone(),
+    raw_output: entry.raw_output.clone(),
+    source: entry.source.clone(),
+  }
+}
+
+fn maven_index_from_config(mut config: AppConfig) -> MavenVersionIndex {
+  normalize_config_defaults(&mut config);
+  MavenVersionIndex {
+    entries: config.maven_versions,
+    default_maven_version_id: config.default_maven_version_id,
+  }
+}
+
+fn find_maven_version(config: &AppConfig, id: &str) -> Result<MavenVersionEntry, String> {
+  config
+    .maven_versions
+    .iter()
+    .find(|entry| entry.id == id)
+    .cloned()
+    .ok_or_else(|| "未找到 Maven 版本".to_string())
+}
+
+fn default_maven_version(config: &AppConfig) -> Option<MavenVersionEntry> {
+  config
+    .default_maven_version_id
+    .as_deref()
+    .and_then(|id| config.maven_versions.iter().find(|entry| entry.id == id))
+    .or_else(|| config.maven_versions.iter().find(|entry| entry.is_default))
+    .or_else(|| config.maven_versions.first())
+    .cloned()
+}
+
+fn maven_home_for_entry(entry: &MavenVersionEntry) -> Result<String, String> {
+  entry
+    .maven_home
+    .clone()
+    .or_else(|| infer_maven_home(Path::new(&entry.mvn_path)))
+    .ok_or_else(|| format!("Maven 版本 \"{}\" 未识别 Maven Home", entry.name))
+}
+
+fn infer_maven_home(mvn_path: &Path) -> Option<String> {
+  let bin_dir = mvn_path.parent()?;
+  if bin_dir
+    .file_name()
+    .and_then(|value| value.to_str())
+    .is_some_and(|name| name.eq_ignore_ascii_case("bin"))
+  {
+    return bin_dir.parent().map(|path| absolute_path(path).to_string_lossy().to_string());
+  }
+  None
+}
+
+fn valid_or_matched_maven_version_id(config: &AppConfig, existing_id: Option<String>, maven_home: &Option<String>) -> Option<String> {
+  if existing_id
+    .as_ref()
+    .is_some_and(|id| config.maven_versions.iter().any(|entry| entry.id == *id))
+  {
+    return existing_id;
+  }
+  let maven_home = maven_home.as_deref()?;
+  config
+    .maven_versions
+    .iter()
+    .find(|entry| {
+      entry
+        .maven_home
+        .as_deref()
+        .is_some_and(|entry_home| same_path(entry_home, maven_home))
+    })
+    .map(|entry| entry.id.clone())
+}
+
+fn same_path(left: &str, right: &str) -> bool {
+  absolute_path(&expand_tilde(left)) == absolute_path(&expand_tilde(right))
 }
 
 fn maven_candidates(manual_path: Option<&str>) -> Vec<(PathBuf, String)> {
@@ -627,9 +1184,68 @@ fn save_config(config: &AppConfig) -> Result<(), String> {
 }
 
 fn normalize_config_defaults(config: &mut AppConfig) {
+  migrate_legacy_maven_path(config);
+  if config.default_maven_version_id.is_none() {
+    config.default_maven_version_id = config.maven_versions.first().map(|entry| entry.id.clone());
+  }
+  let default_maven_version_id = config.default_maven_version_id.clone();
+  for entry in &mut config.maven_versions {
+    entry.is_default = default_maven_version_id.as_deref() == Some(entry.id.as_str());
+  }
   for entry in &mut config.settings {
     entry.is_default = config.default_settings_id.as_deref() == Some(entry.id.as_str());
   }
+  let settings_ids: HashSet<String> = config.settings.iter().map(|entry| entry.id.clone()).collect();
+  let maven_version_ids: HashSet<String> = config.maven_versions.iter().map(|entry| entry.id.clone()).collect();
+  for project in &mut config.idea_projects {
+    if project
+      .maven_version_id
+      .as_ref()
+      .is_some_and(|maven_version_id| !maven_version_ids.contains(maven_version_id))
+    {
+      project.maven_version_id = None;
+    }
+    if project
+      .settings_id
+      .as_ref()
+      .is_some_and(|settings_id| !settings_ids.contains(settings_id))
+    {
+      project.settings_id = None;
+    }
+  }
+}
+
+fn migrate_legacy_maven_path(config: &mut AppConfig) {
+  if !config.maven_versions.is_empty() {
+    return;
+  }
+  let Some(path) = config.maven_path.clone() else {
+    return;
+  };
+  let Ok(mvn_path) = resolve_maven_input(&path) else {
+    return;
+  };
+  let Ok(info) = run_maven_version(&mvn_path, "manual") else {
+    return;
+  };
+  let now = now_stamp();
+  let maven_home = info.maven_home.clone().or_else(|| infer_maven_home(&mvn_path));
+  let name = normalize_maven_name("", info.version.as_deref(), maven_home.as_deref(), "manual");
+  let entry = MavenVersionEntry {
+    id: make_id(&name),
+    name,
+    mvn_path: mvn_path.to_string_lossy().to_string(),
+    maven_home,
+    version: info.version,
+    java_version: info.java_version,
+    raw_output: info.raw_output,
+    source: "manual".to_string(),
+    is_default: true,
+    created_at: now.clone(),
+    updated_at: now,
+  };
+  config.default_maven_version_id = Some(entry.id.clone());
+  config.maven_versions.push(entry);
 }
 
 fn index_from_config(mut config: AppConfig) -> SettingsIndex {
@@ -754,6 +1370,331 @@ fn file_stem(path: &Path) -> String {
     .and_then(|value| value.to_str())
     .unwrap_or("settings")
     .to_string()
+}
+
+fn dir_name(path: &Path) -> String {
+  path
+    .file_name()
+    .and_then(|value| value.to_str())
+    .filter(|value| !value.trim().is_empty())
+    .unwrap_or("IDEA 项目")
+    .to_string()
+}
+
+fn path_if_dir(path: &Path) -> Option<String> {
+  path.is_dir().then(|| absolute_path(path).to_string_lossy().to_string())
+}
+
+fn path_if_file(path: &Path) -> Option<String> {
+  path.is_file().then(|| absolute_path(path).to_string_lossy().to_string())
+}
+
+fn read_optional_text(path: &Path) -> Result<Option<String>, String> {
+  if !path.is_file() {
+    return Ok(None);
+  }
+  fs::read_to_string(path)
+    .map(Some)
+    .map_err(|error| format!("读取 {} 失败：{error}", path.to_string_lossy()))
+}
+
+fn write_optional_project_text(path: &Path, value: &str) -> Result<Option<String>, String> {
+  let normalized = value.trim().to_string();
+  if normalized.is_empty() {
+    if path.exists() {
+      fs::remove_file(path).map_err(|error| format!("删除 {} 失败：{error}", path.to_string_lossy()))?;
+    }
+    return Ok(None);
+  }
+  if let Some(parent) = path.parent() {
+    fs::create_dir_all(parent).map_err(|error| format!("创建项目 .mvn 目录失败：{error}"))?;
+  }
+  fs::write(path, &normalized).map_err(|error| format!("写入 {} 失败：{error}", path.to_string_lossy()))?;
+  Ok(Some(normalized))
+}
+
+fn refresh_idea_projects_from_disk(config: &mut AppConfig) -> Result<(), String> {
+  let mut refreshed = Vec::with_capacity(config.idea_projects.len());
+  for project in config.idea_projects.clone() {
+    let project_root = absolute_path(Path::new(&project.project_path));
+    if !project_root.is_dir() {
+      refreshed.push(project);
+      continue;
+    }
+
+    let idea_dir = project_root.join(".idea");
+    let pom_path = project_root.join("pom.xml");
+    let mvn_dir = project_root.join(".mvn");
+    let metadata = read_idea_maven_metadata(&project_root)?;
+    let maven_config = read_optional_text(&mvn_dir.join("maven.config"))?;
+    let jvm_config = read_optional_text(&mvn_dir.join("jvm.config"))?;
+    let settings_source = metadata
+      .user_settings_file
+      .as_deref()
+      .map(PathBuf::from)
+      .filter(|path| path.is_file())
+      .or_else(|| find_project_settings_path(&project_root));
+    let settings_path = settings_source.as_ref().map(|path| absolute_path(path).to_string_lossy().to_string());
+    let settings_id = project.settings_id.clone();
+    let maven_version_id = valid_or_matched_maven_version_id(config, project.maven_version_id.clone(), &metadata.maven_home);
+
+    refreshed.push(IdeaProjectEntry {
+      id: project.id,
+      name: dir_name(&project_root),
+      project_path: project_root.to_string_lossy().to_string(),
+      idea_dir: path_if_dir(&idea_dir),
+      workspace_path: metadata.workspace_path,
+      misc_path: metadata.misc_path,
+      pom_path: path_if_file(&pom_path),
+      pom_files: metadata.pom_files,
+      maven_home: metadata.maven_home,
+      maven_home_type: metadata.maven_home_type,
+      local_repository: metadata.local_repository,
+      settings_path,
+      maven_config,
+      jvm_config,
+      maven_version_id,
+      settings_id,
+      imported_at: project.imported_at,
+      updated_at: now_stamp(),
+    });
+  }
+  config.idea_projects = refreshed;
+  normalize_config_defaults(config);
+  Ok(())
+}
+
+fn write_global_settings_to_project(config: &AppConfig, settings_id: &str, mvn_dir: &Path) -> Result<String, String> {
+  let entry = find_entry(config, settings_id)?;
+  let xml = fs::read_to_string(&entry.file_path).map_err(|error| format!("读取全局 settings 配置失败：{error}"))?;
+  let validation = validate_settings_xml(&xml);
+  if !validation.errors.is_empty() {
+    return Err(validation.errors.join("；"));
+  }
+  fs::create_dir_all(mvn_dir).map_err(|error| format!("创建项目 .mvn 目录失败：{error}"))?;
+  let target = mvn_dir.join("settings.xml");
+  fs::write(&target, xml).map_err(|error| format!("写入项目 settings.xml 失败：{error}"))?;
+  Ok(target.to_string_lossy().to_string())
+}
+
+fn normalize_optional_path(path: &str) -> Option<String> {
+  let value = path.trim();
+  if value.is_empty() {
+    None
+  } else {
+    Some(absolute_path(&expand_tilde(value)).to_string_lossy().to_string())
+  }
+}
+
+fn read_idea_maven_metadata(project_root: &Path) -> Result<IdeaMavenMetadata, String> {
+  let idea_dir = project_root.join(".idea");
+  let workspace_path = idea_dir.join("workspace.xml");
+  let misc_path = idea_dir.join("misc.xml");
+  let mut metadata = IdeaMavenMetadata {
+    workspace_path: path_if_file(&workspace_path),
+    misc_path: path_if_file(&misc_path),
+    ..IdeaMavenMetadata::default()
+  };
+
+  for file_path in [&workspace_path, &misc_path] {
+    if !file_path.is_file() {
+      continue;
+    }
+    let text = fs::read_to_string(file_path).map_err(|error| format!("读取 IDEA 配置失败：{error}"))?;
+    let doc = Document::parse(&text).map_err(|error| format!("解析 IDEA 配置失败：{error}"))?;
+    for node in doc.descendants().filter(|node| node.has_tag_name("MavenGeneralSettings")) {
+      metadata.maven_home = metadata
+        .maven_home
+        .or_else(|| idea_option_value(&node, "customMavenHome").or_else(|| idea_option_value(&node, "mavenHome")))
+        .map(|value| resolve_idea_path(project_root, &value));
+      metadata.maven_home_type = metadata.maven_home_type.or_else(|| idea_option_value(&node, "mavenHomeTypeForPersistence"));
+      metadata.local_repository = metadata
+        .local_repository
+        .or_else(|| idea_option_value(&node, "localRepository"))
+        .map(|value| resolve_idea_path(project_root, &value));
+      metadata.user_settings_file = metadata
+        .user_settings_file
+        .or_else(|| idea_option_value(&node, "userSettingsFile"))
+        .map(|value| resolve_idea_path(project_root, &value));
+    }
+    for node in doc.descendants().filter(|node| node.has_tag_name("option") && node.attribute("name") == Some("originalFiles")) {
+      for item in node.descendants().filter(|child| child.has_tag_name("option")) {
+        if let Some(value) = item.attribute("value") {
+          let resolved = resolve_idea_path(project_root, value);
+          if !metadata.pom_files.contains(&resolved) {
+            metadata.pom_files.push(resolved);
+          }
+        }
+      }
+    }
+  }
+
+  if metadata.pom_files.is_empty() {
+    let pom_path = project_root.join("pom.xml");
+    if pom_path.is_file() {
+      metadata.pom_files.push(pom_path.to_string_lossy().to_string());
+    }
+  }
+  Ok(metadata)
+}
+
+fn idea_option_value(node: &roxmltree::Node<'_, '_>, name: &str) -> Option<String> {
+  node
+    .children()
+    .find(|child| child.has_tag_name("option") && child.attribute("name") == Some(name))
+    .and_then(|child| child.attribute("value"))
+    .map(ToOwned::to_owned)
+}
+
+fn resolve_idea_path(project_root: &Path, value: &str) -> String {
+  let mut path = value.trim().trim_start_matches("file://").to_string();
+  path = path.replace("$PROJECT_DIR$", &project_root.to_string_lossy());
+  path = path.replace("$USER_HOME$", &home_dir().to_string_lossy());
+  path = path.replace("$MAVEN_REPOSITORY$", &home_dir().join(".m2").join("repository").to_string_lossy());
+  let path_buf = PathBuf::from(&path);
+  let resolved = if path_buf.is_absolute() { path_buf } else { project_root.join(path_buf) };
+  absolute_path(&resolved).to_string_lossy().to_string()
+}
+
+fn save_idea_maven_general_settings(
+  project_root: &Path,
+  maven_home: Option<&str>,
+  local_repository: Option<&str>,
+  settings_path: Option<&str>,
+) -> Result<(String, Option<String>), String> {
+  let idea_dir = project_root.join(".idea");
+  fs::create_dir_all(&idea_dir).map_err(|error| format!("创建 .idea 目录失败：{error}"))?;
+  let workspace_path = idea_dir.join("workspace.xml");
+  let mut text = if workspace_path.is_file() {
+    fs::read_to_string(&workspace_path).map_err(|error| format!("读取 IDEA workspace 失败：{error}"))?
+  } else {
+    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<project version=\"4\">\n</project>\n".to_string()
+  };
+  let settings_block = build_maven_general_settings_block(maven_home, local_repository, settings_path);
+  let option_block = format!("    <option name=\"generalSettings\">\n{}\n    </option>", settings_block);
+  let component_block = format!("  <component name=\"MavenImportPreferences\">\n{}\n  </component>", option_block);
+  text = upsert_maven_general_settings_block(&text, &settings_block, &option_block, &component_block);
+  fs::write(&workspace_path, text).map_err(|error| format!("写入 IDEA workspace 失败：{error}"))?;
+  Ok((workspace_path.to_string_lossy().to_string(), maven_home.map(|_| "CUSTOM".to_string())))
+}
+
+fn build_maven_general_settings_block(maven_home: Option<&str>, local_repository: Option<&str>, settings_path: Option<&str>) -> String {
+  let mut lines = vec![
+    "      <MavenGeneralSettings>".to_string(),
+  ];
+  if let Some(value) = maven_home {
+    lines.push(format!("        <option name=\"customMavenHome\" value=\"{}\" />", xml_escape_attr(value)));
+    lines.push("        <option name=\"mavenHomeTypeForPersistence\" value=\"CUSTOM\" />".to_string());
+  }
+  if let Some(value) = local_repository {
+    lines.push(format!("        <option name=\"localRepository\" value=\"{}\" />", xml_escape_attr(value)));
+  }
+  if let Some(value) = settings_path {
+    lines.push(format!("        <option name=\"userSettingsFile\" value=\"{}\" />", xml_escape_attr(value)));
+  }
+  lines.extend([
+    "      </MavenGeneralSettings>".to_string(),
+  ]);
+  lines.join("\n")
+}
+
+fn upsert_maven_general_settings_block(text: &str, settings_block: &str, option_block: &str, component_block: &str) -> String {
+  if let Some((start, end)) = find_named_tag_range(text, "MavenGeneralSettings", None) {
+    return format!("{}{}{}", &text[..start], settings_block, &text[end..]);
+  }
+  if let Some((component_start, component_end)) = find_component_range(text, "MavenImportPreferences") {
+    let component = &text[component_start..component_end];
+    if let Some((option_start, option_end)) = find_named_tag_range(component, "option", Some(("name", "generalSettings"))) {
+      return format!(
+        "{}{}{}{}{}",
+        &text[..component_start],
+        &component[..option_start],
+        option_block,
+        &component[option_end..],
+        &text[component_end..]
+      );
+    }
+    if let Some(insert_at) = component.rfind("</component>") {
+      return format!(
+        "{}{}\n{}{}",
+        &text[..component_start],
+        &component[..insert_at],
+        option_block,
+        &component[insert_at..]
+      ) + &text[component_end..];
+    }
+  }
+  if let Some(insert_at) = text.rfind("</project>") {
+    return format!("{}{}\n{}", &text[..insert_at], component_block, &text[insert_at..]);
+  }
+  format!("{}\n{}", text.trim_end(), component_block)
+}
+
+fn find_component_range(text: &str, component_name: &str) -> Option<(usize, usize)> {
+  let marker = format!("name=\"{component_name}\"");
+  let marker_index = text.find(&marker)?;
+  let start = text[..marker_index].rfind("<component")?;
+  let after_marker = marker_index + marker.len();
+  let open_end = text[after_marker..].find('>').map(|index| after_marker + index + 1)?;
+  if text[start..open_end].trim_end().ends_with("/>") {
+    return Some((start, open_end));
+  }
+  let close = "</component>";
+  let close_start = text[open_end..].find(close).map(|index| open_end + index)?;
+  Some((start, close_start + close.len()))
+}
+
+fn find_named_tag_range(text: &str, tag: &str, attr: Option<(&str, &str)>) -> Option<(usize, usize)> {
+  let tag_start = format!("<{tag}");
+  let close = format!("</{tag}>");
+  let mut offset = 0;
+  while let Some(relative_start) = text[offset..].find(&tag_start) {
+    let start = offset + relative_start;
+    let open_end = text[start..].find('>').map(|index| start + index + 1)?;
+    let open_tag = &text[start..open_end];
+    if let Some((name, value)) = attr {
+      let marker = format!("{name}=\"{value}\"");
+      if !open_tag.contains(&marker) {
+        offset = open_end;
+        continue;
+      }
+    }
+    if open_tag.trim_end().ends_with("/>") {
+      return Some((start, open_end));
+    }
+    let close_start = text[open_end..].find(&close).map(|index| open_end + index)?;
+    return Some((start, close_start + close.len()));
+  }
+  None
+}
+
+fn xml_escape_attr(value: &str) -> String {
+  value
+    .replace('&', "&amp;")
+    .replace('"', "&quot;")
+    .replace('<', "&lt;")
+    .replace('>', "&gt;")
+}
+
+fn find_project_settings_path(project_root: &Path) -> Option<PathBuf> {
+  [
+    project_root.join(".mvn").join("settings.xml"),
+    project_root.join("settings.xml"),
+    project_root.join(".idea").join("settings.xml"),
+  ]
+  .into_iter()
+  .find(|path| path.is_file())
+}
+
+fn project_settings_target(project: &IdeaProjectEntry) -> Result<PathBuf, String> {
+  if let Some(path) = project.settings_path.as_deref() {
+    return Ok(absolute_path(&expand_tilde(path)));
+  }
+  let project_root = absolute_path(Path::new(&project.project_path));
+  if !project_root.is_dir() {
+    return Err("关联 IDEA 项目目录不存在，无法写回项目 settings".to_string());
+  }
+  Ok(project_root.join(".mvn").join("settings.xml"))
 }
 
 fn quote_path(path: &str) -> String {

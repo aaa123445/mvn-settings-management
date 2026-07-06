@@ -1,4 +1,4 @@
-export type SourceType = "managed" | "external";
+export type SourceType = "managed" | "external" | "ideaProject";
 
 export interface MavenInfo {
   mvnPath: string | null;
@@ -7,6 +7,25 @@ export interface MavenInfo {
   javaVersion: string | null;
   rawOutput: string;
   source: string;
+}
+
+export interface MavenVersionEntry {
+  id: string;
+  name: string;
+  mvnPath: string;
+  mavenHome: string | null;
+  version: string | null;
+  javaVersion: string | null;
+  rawOutput: string;
+  source: string;
+  isDefault: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface MavenVersionIndex {
+  entries: MavenVersionEntry[];
+  defaultMavenVersionId: string | null;
 }
 
 export interface ValidationResult {
@@ -35,6 +54,32 @@ export interface SettingsDocument {
   entry: SettingsEntry;
   xml: string;
   validation: ValidationResult;
+}
+
+export interface IdeaProjectEntry {
+  id: string;
+  name: string;
+  projectPath: string;
+  ideaDir: string | null;
+  workspacePath: string | null;
+  miscPath: string | null;
+  pomPath: string | null;
+  pomFiles: string[];
+  mavenHome: string | null;
+  mavenHomeType: string | null;
+  localRepository: string | null;
+  settingsPath: string | null;
+  mavenConfig: string | null;
+  jvmConfig: string | null;
+  mavenVersionId: string | null;
+  settingsId: string | null;
+  importedAt: string;
+  updatedAt: string;
+}
+
+export interface IdeaProjectImportResult {
+  project: IdeaProjectEntry;
+  settings: SettingsDocument | null;
 }
 
 export interface BackupResult {

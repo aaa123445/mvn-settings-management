@@ -1,6 +1,6 @@
 {
   "name": "mvn-settings-management",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -13,13 +13,19 @@
     "package:mac": "tauri build --bundles app,dmg",
     "package:win": "tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles nsis",
     "package:win:exe": "tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc --no-bundle",
+    "package:win:x86": "tauri build --runner cargo-xwin --target i686-pc-windows-msvc --bundles nsis",
+    "package:win:exe:x86": "tauri build --runner cargo-xwin --target i686-pc-windows-msvc --no-bundle",
+    "package:win:x64": "tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles nsis",
+    "package:win:exe:x64": "tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc --no-bundle",
     "package:win:manual": "mkdir -p src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis && makensis packaging/windows/maven-settings-management.nsi"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.5.0",
     "@tauri-apps/plugin-dialog": "^2.7.1",
+    "lucide-react": "^1.23.0",
     "react": "^19.1.0",
-    "react-dom": "^19.1.0"
+    "react-dom": "^19.1.0",
+    "recharts": "^3.9.2"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.5.0",

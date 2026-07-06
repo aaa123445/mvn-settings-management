@@ -1,6 +1,6 @@
 [package]
 name = "mvn-settings-management"
-version = "0.1.0"
+version = "0.2.0"
 description = "Maven local settings management client"
 authors = ["ljc"]
 edition = "2021"

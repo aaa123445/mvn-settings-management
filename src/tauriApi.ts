@@ -1,5 +1,17 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { BackupInfo, BackupResult, MavenInfo, MavenTestResult, SettingsDocument, SettingsEntry, SettingsIndex } from "./types";
+import type {
+  BackupInfo,
+  BackupResult,
+  IdeaProjectEntry,
+  IdeaProjectImportResult,
+  MavenInfo,
+  MavenTestResult,
+  MavenVersionEntry,
+  MavenVersionIndex,
+  SettingsDocument,
+  SettingsEntry,
+  SettingsIndex,
+} from "./types";
 
 declare global {
   interface Window {
@@ -22,6 +34,30 @@ export function setMavenPath(path: string): Promise<MavenInfo> {
   return invokeClient("set_maven_path", { path });
 }
 
+export function listMavenVersions(): Promise<MavenVersionIndex> {
+  return invokeClient("list_maven_versions");
+}
+
+export function addMavenVersion(path: string, name: string): Promise<MavenVersionEntry> {
+  return invokeClient("add_maven_version", { path, name });
+}
+
+export function detectAndAddMavenVersion(): Promise<MavenVersionEntry> {
+  return invokeClient("detect_and_add_maven_version");
+}
+
+export function renameMavenVersion(id: string, name: string): Promise<MavenVersionEntry> {
+  return invokeClient("rename_maven_version", { id, name });
+}
+
+export function setDefaultMavenVersion(id: string): Promise<MavenVersionEntry> {
+  return invokeClient("set_default_maven_version", { id });
+}
+
+export function deleteMavenVersion(id: string): Promise<void> {
+  return invokeClient("delete_maven_version", { id });
+}
+
 export function listSettings(): Promise<SettingsIndex> {
   return invokeClient("list_settings");
 }
@@ -32,6 +68,25 @@ export function createSettings(name: string, mode: "empty" | "default"): Promise
 
 export function importSettings(path: string, name: string): Promise<SettingsDocument> {
   return invokeClient("import_settings", { path, name });
+}
+
+export function listIdeaProjects(): Promise<IdeaProjectEntry[]> {
+  return invokeClient("list_idea_projects");
+}
+
+export function importIdeaProject(projectPath: string): Promise<IdeaProjectImportResult> {
+  return invokeClient("import_idea_project", { projectPath });
+}
+
+export function saveIdeaProjectConfig(
+  id: string,
+  mavenVersionId: string,
+  localRepository: string,
+  settingsId: string,
+  mavenConfig: string,
+  jvmConfig: string,
+): Promise<IdeaProjectEntry> {
+  return invokeClient("save_idea_project_config", { id, mavenVersionId, localRepository, settingsId, mavenConfig, jvmConfig });
 }
 
 export function readSettings(id: string): Promise<SettingsDocument> {
