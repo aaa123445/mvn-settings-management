@@ -294,7 +294,7 @@ fn create_settings(name: String, mode: String) -> Result<SettingsDocument, Strin
   let entry = SettingsEntry {
     id,
     name: normalize_name(&name),
-    file_path: file_path.to_string_lossy().to_string(),
+    file_path: path_to_display_string(&file_path),
     source_type: "managed".to_string(),
     is_default: false,
     created_at: now.clone(),
@@ -331,7 +331,7 @@ fn import_settings(path: String, name: String) -> Result<SettingsDocument, Strin
   let entry = SettingsEntry {
     id,
     name: if name.trim().is_empty() { file_stem(&file_path) } else { normalize_name(&name) },
-    file_path: target_path.to_string_lossy().to_string(),
+    file_path: path_to_display_string(&target_path),
     source_type: "managed".to_string(),
     is_default: false,
     created_at: now.clone(),
@@ -379,7 +379,7 @@ fn import_idea_project(project_path: String) -> Result<IdeaProjectImportResult, 
     .map(PathBuf::from)
     .filter(|path| path.is_file())
     .or_else(|| find_project_settings_path(&project_root));
-  let project_settings_path = settings_source.as_ref().map(|path| absolute_path(path).to_string_lossy().to_string());
+  let project_settings_path = settings_source.as_ref().map(|path| absolute_path_string(path));
   let now = now_stamp();
   let mut config = load_config()?;
   let existing_index = config
@@ -408,7 +408,7 @@ fn import_idea_project(project_path: String) -> Result<IdeaProjectImportResult, 
     let settings_name = format!("{project_name} IDEA settings");
     let saved_entry = if let Some(entry) = config.settings.iter_mut().find(|entry| entry.id == settings_id) {
       entry.name = settings_name;
-      entry.file_path = target_path.to_string_lossy().to_string();
+      entry.file_path = path_to_display_string(&target_path);
       entry.source_type = "managed".to_string();
       entry.updated_at = now.clone();
       entry.clone()
@@ -416,7 +416,7 @@ fn import_idea_project(project_path: String) -> Result<IdeaProjectImportResult, 
       let entry = SettingsEntry {
         id: settings_id.clone(),
         name: settings_name,
-        file_path: target_path.to_string_lossy().to_string(),
+        file_path: path_to_display_string(&target_path),
         source_type: "managed".to_string(),
         is_default: false,
         created_at: now.clone(),
@@ -441,7 +441,7 @@ fn import_idea_project(project_path: String) -> Result<IdeaProjectImportResult, 
       .map(|project| project.id.clone())
       .unwrap_or_else(|| make_id(&project_name)),
     name: project_name,
-    project_path: project_root.to_string_lossy().to_string(),
+    project_path: path_to_display_string(&project_root),
     idea_dir: path_if_dir(&idea_dir),
     workspace_path: idea_metadata.workspace_path,
     misc_path: idea_metadata.misc_path,
@@ -583,7 +583,7 @@ fn save_settings(id: String, xml: String) -> Result<SettingsDocument, String> {
       fs::create_dir_all(parent).map_err(|error| format!("创建项目 .mvn 目录失败：{error}"))?;
     }
     fs::write(&target_path, &xml).map_err(|error| format!("写回 IDEA 项目 settings 失败：{error}"))?;
-    config.idea_projects[project_index].settings_path = Some(target_path.to_string_lossy().to_string());
+    config.idea_projects[project_index].settings_path = Some(path_to_display_string(&target_path));
     config.idea_projects[project_index].updated_at = now_stamp();
   }
 
@@ -637,7 +637,7 @@ fn duplicate_settings(id: String, name: String) -> Result<SettingsDocument, Stri
   let entry = SettingsEntry {
     id: new_id,
     name: next_name,
-    file_path: file_path.to_string_lossy().to_string(),
+    file_path: path_to_display_string(&file_path),
     source_type: "managed".to_string(),
     is_default: false,
     created_at: now.clone(),
@@ -671,7 +671,7 @@ fn set_default_settings(id: String) -> Result<BackupResult, String> {
     fs::create_dir_all(backups_dir()?).map_err(|error| format!("创建备份目录失败：{error}"))?;
     let backup = backups_dir()?.join(format!("settings-{}.xml", now_stamp()));
     fs::copy(&target, &backup).map_err(|error| format!("备份默认 settings 失败：{error}"))?;
-    Some(backup.to_string_lossy().to_string())
+    Some(path_to_display_string(&backup))
   } else {
     None
   };
@@ -684,7 +684,7 @@ fn set_default_settings(id: String) -> Result<BackupResult, String> {
   save_config(&config)?;
 
   Ok(BackupResult {
-    settings_path: target.to_string_lossy().to_string(),
+    settings_path: path_to_display_string(&target),
     backup_path,
     default_settings_id: id,
   })
@@ -707,7 +707,7 @@ fn list_backups() -> Result<Vec<BackupInfo>, String> {
         .and_then(|value| value.to_str())
         .unwrap_or("settings-backup.xml")
         .to_string(),
-      file_path: path.to_string_lossy().to_string(),
+      file_path: path_to_display_string(&path),
       size: metadata.len(),
       modified_at: metadata
         .modified()
@@ -744,14 +744,14 @@ fn restore_backup(path: String) -> Result<BackupResult, String> {
   let rollback_path = if target.exists() {
     let rollback = backups_dir()?.join(format!("settings-before-restore-{}.xml", now_stamp()));
     fs::copy(&target, &rollback).map_err(|error| format!("备份当前默认 settings 失败：{error}"))?;
-    Some(rollback.to_string_lossy().to_string())
+    Some(path_to_display_string(&rollback))
   } else {
     None
   };
   fs::copy(&backup_path, &target).map_err(|error| format!("恢复默认 settings 失败：{error}"))?;
   let config = load_config()?;
   Ok(BackupResult {
-    settings_path: target.to_string_lossy().to_string(),
+    settings_path: path_to_display_string(&target),
     backup_path: rollback_path,
     default_settings_id: config.default_settings_id.unwrap_or_default(),
   })
@@ -1001,7 +1001,7 @@ fn infer_maven_home(mvn_path: &Path) -> Option<String> {
     .and_then(|value| value.to_str())
     .is_some_and(|name| name.eq_ignore_ascii_case("bin"))
   {
-    return bin_dir.parent().map(|path| absolute_path(path).to_string_lossy().to_string());
+    return bin_dir.parent().map(absolute_path_string);
   }
   None
 }
@@ -1096,7 +1096,7 @@ fn run_maven_version(path: &Path, source: &str) -> Result<MavenInfo, String> {
   );
   let clean = strip_ansi(&raw);
   Ok(MavenInfo {
-    mvn_path: Some(path.to_string_lossy().to_string()),
+    mvn_path: Some(path_to_display_string(path)),
     maven_home: parse_prefixed_line(&clean, "Maven home:"),
     version: parse_maven_version(&clean),
     java_version: parse_prefixed_line(&clean, "Java version:"),
@@ -1185,6 +1185,7 @@ fn save_config(config: &AppConfig) -> Result<(), String> {
 
 fn normalize_config_defaults(config: &mut AppConfig) {
   migrate_legacy_maven_path(config);
+  normalize_config_paths(config);
   if config.default_maven_version_id.is_none() {
     config.default_maven_version_id = config.maven_versions.first().map(|entry| entry.id.clone());
   }
@@ -1215,6 +1216,43 @@ fn normalize_config_defaults(config: &mut AppConfig) {
   }
 }
 
+fn normalize_config_paths(config: &mut AppConfig) {
+  normalize_optional_path_value(&mut config.maven_path);
+  for entry in &mut config.maven_versions {
+    normalize_path_value(&mut entry.mvn_path);
+    normalize_optional_path_value(&mut entry.maven_home);
+  }
+  for entry in &mut config.settings {
+    normalize_path_value(&mut entry.file_path);
+  }
+  for project in &mut config.idea_projects {
+    normalize_path_value(&mut project.project_path);
+    normalize_optional_path_value(&mut project.idea_dir);
+    normalize_optional_path_value(&mut project.workspace_path);
+    normalize_optional_path_value(&mut project.misc_path);
+    normalize_optional_path_value(&mut project.pom_path);
+    normalize_optional_path_value(&mut project.maven_home);
+    normalize_optional_path_value(&mut project.local_repository);
+    normalize_optional_path_value(&mut project.settings_path);
+    for pom_file in &mut project.pom_files {
+      normalize_path_value(pom_file);
+    }
+  }
+}
+
+fn normalize_optional_path_value(value: &mut Option<String>) {
+  if let Some(path) = value {
+    normalize_path_value(path);
+  }
+}
+
+fn normalize_path_value(value: &mut String) {
+  let normalized = normalize_windows_verbatim_path(value);
+  if normalized != *value {
+    *value = normalized;
+  }
+}
+
 fn migrate_legacy_maven_path(config: &mut AppConfig) {
   if !config.maven_versions.is_empty() {
     return;
@@ -1234,7 +1272,7 @@ fn migrate_legacy_maven_path(config: &mut AppConfig) {
   let entry = MavenVersionEntry {
     id: make_id(&name),
     name,
-    mvn_path: mvn_path.to_string_lossy().to_string(),
+    mvn_path: path_to_display_string(&mvn_path),
     maven_home,
     version: info.version,
     java_version: info.java_version,
@@ -1253,7 +1291,7 @@ fn index_from_config(mut config: AppConfig) -> SettingsIndex {
   SettingsIndex {
     entries: config.settings,
     default_settings_id: config.default_settings_id,
-    user_settings_path: user_settings_path().to_string_lossy().to_string(),
+    user_settings_path: path_to_display_string(&user_settings_path()),
   }
 }
 
@@ -1328,6 +1366,53 @@ fn absolute_path(path: &Path) -> PathBuf {
   fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
+fn absolute_path_string(path: &Path) -> String {
+  path_to_display_string(&absolute_path(path))
+}
+
+fn path_to_display_string(path: &Path) -> String {
+  normalize_windows_verbatim_path(&path.to_string_lossy())
+}
+
+fn normalize_windows_verbatim_path(value: &str) -> String {
+  if let Some(rest) = value.strip_prefix("\\\\?\\UNC\\") {
+    format!("\\\\{rest}")
+  } else if let Some(rest) = value.strip_prefix("\\\\?\\") {
+    rest.to_string()
+  } else {
+    value.to_string()
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::normalize_windows_verbatim_path;
+
+  #[test]
+  fn strips_windows_verbatim_drive_prefix() {
+    assert_eq!(
+      normalize_windows_verbatim_path(r"\\?\C:\Users\demo\project"),
+      r"C:\Users\demo\project"
+    );
+  }
+
+  #[test]
+  fn strips_windows_verbatim_unc_prefix() {
+    assert_eq!(
+      normalize_windows_verbatim_path(r"\\?\UNC\server\share\project"),
+      r"\\server\share\project"
+    );
+  }
+
+  #[test]
+  fn keeps_regular_path() {
+    assert_eq!(
+      normalize_windows_verbatim_path(r"C:\Users\demo\project"),
+      r"C:\Users\demo\project"
+    );
+  }
+}
+
 fn is_inside(path: &Path, parent: &Path) -> bool {
   let path = absolute_path(path);
   let parent = absolute_path(parent);
@@ -1382,11 +1467,11 @@ fn dir_name(path: &Path) -> String {
 }
 
 fn path_if_dir(path: &Path) -> Option<String> {
-  path.is_dir().then(|| absolute_path(path).to_string_lossy().to_string())
+  path.is_dir().then(|| absolute_path_string(path))
 }
 
 fn path_if_file(path: &Path) -> Option<String> {
-  path.is_file().then(|| absolute_path(path).to_string_lossy().to_string())
+  path.is_file().then(|| absolute_path_string(path))
 }
 
 fn read_optional_text(path: &Path) -> Result<Option<String>, String> {
@@ -1434,14 +1519,14 @@ fn refresh_idea_projects_from_disk(config: &mut AppConfig) -> Result<(), String>
       .map(PathBuf::from)
       .filter(|path| path.is_file())
       .or_else(|| find_project_settings_path(&project_root));
-    let settings_path = settings_source.as_ref().map(|path| absolute_path(path).to_string_lossy().to_string());
+    let settings_path = settings_source.as_ref().map(|path| absolute_path_string(path));
     let settings_id = project.settings_id.clone();
     let maven_version_id = valid_or_matched_maven_version_id(config, project.maven_version_id.clone(), &metadata.maven_home);
 
     refreshed.push(IdeaProjectEntry {
       id: project.id,
       name: dir_name(&project_root),
-      project_path: project_root.to_string_lossy().to_string(),
+      project_path: path_to_display_string(&project_root),
       idea_dir: path_if_dir(&idea_dir),
       workspace_path: metadata.workspace_path,
       misc_path: metadata.misc_path,
@@ -1474,7 +1559,7 @@ fn write_global_settings_to_project(config: &AppConfig, settings_id: &str, mvn_d
   fs::create_dir_all(mvn_dir).map_err(|error| format!("创建项目 .mvn 目录失败：{error}"))?;
   let target = mvn_dir.join("settings.xml");
   fs::write(&target, xml).map_err(|error| format!("写入项目 settings.xml 失败：{error}"))?;
-  Ok(target.to_string_lossy().to_string())
+  Ok(path_to_display_string(&target))
 }
 
 fn normalize_optional_path(path: &str) -> Option<String> {
@@ -1482,7 +1567,7 @@ fn normalize_optional_path(path: &str) -> Option<String> {
   if value.is_empty() {
     None
   } else {
-    Some(absolute_path(&expand_tilde(value)).to_string_lossy().to_string())
+    Some(absolute_path_string(&expand_tilde(value)))
   }
 }
 
@@ -1532,7 +1617,7 @@ fn read_idea_maven_metadata(project_root: &Path) -> Result<IdeaMavenMetadata, St
   if metadata.pom_files.is_empty() {
     let pom_path = project_root.join("pom.xml");
     if pom_path.is_file() {
-      metadata.pom_files.push(pom_path.to_string_lossy().to_string());
+      metadata.pom_files.push(path_to_display_string(&pom_path));
     }
   }
   Ok(metadata)
@@ -1553,7 +1638,7 @@ fn resolve_idea_path(project_root: &Path, value: &str) -> String {
   path = path.replace("$MAVEN_REPOSITORY$", &home_dir().join(".m2").join("repository").to_string_lossy());
   let path_buf = PathBuf::from(&path);
   let resolved = if path_buf.is_absolute() { path_buf } else { project_root.join(path_buf) };
-  absolute_path(&resolved).to_string_lossy().to_string()
+  absolute_path_string(&resolved)
 }
 
 fn save_idea_maven_general_settings(
@@ -1575,7 +1660,7 @@ fn save_idea_maven_general_settings(
   let component_block = format!("  <component name=\"MavenImportPreferences\">\n{}\n  </component>", option_block);
   text = upsert_maven_general_settings_block(&text, &settings_block, &option_block, &component_block);
   fs::write(&workspace_path, text).map_err(|error| format!("写入 IDEA workspace 失败：{error}"))?;
-  Ok((workspace_path.to_string_lossy().to_string(), maven_home.map(|_| "CUSTOM".to_string())))
+  Ok((path_to_display_string(&workspace_path), maven_home.map(|_| "CUSTOM".to_string())))
 }
 
 fn build_maven_general_settings_block(maven_home: Option<&str>, local_repository: Option<&str>, settings_path: Option<&str>) -> String {
